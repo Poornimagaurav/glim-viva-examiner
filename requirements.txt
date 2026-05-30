@@ -1,0 +1,6 @@
+streamlit>=1.41.0
+groq
+pymupdf
+python-docx
+openpyxl
+requests
