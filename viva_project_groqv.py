@@ -7,6 +7,15 @@ Original file is located at
     https://colab.research.google.com/drive/1Q8kbhqyQiT3Eo075e1C3EFfVSrHYV-Ls
 """
 
+# ==============================================================================
+# ⚙️ EXAMINER VIVA CONFIGURATIONS (Modify here before deploying to students)
+# ==============================================================================
+VIVA_SUBJECT = "Organizational Behaviour"      # Options: Marketing Management, Financial Management, Human Resource Management, Organizational Behaviour, Organizational Behaviour 2, Business Strategy
+VIVA_DIFFICULTY = "Standard"               # Options: Easy, Standard, Rigorous
+VIVA_TOTAL_QUESTIONS = 10                  # Total questions/exchanges before completing
+VIVA_TIME_LIMIT_MINUTES = 10               # Session time limit in minutes (exactly 10 mins)
+# ==============================================================================
+
 import streamlit as st
 import streamlit.components.v1 as components
 from groq import Groq
@@ -14,6 +23,7 @@ import fitz
 from docx import Document
 import io
 import re
+import time
 from datetime import datetime
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -34,6 +44,235 @@ except NameError:
     # __file__ isn't defined in some interactive contexts (e.g. Jupyter); fall back to cwd
     _SCRIPT_DIR = os.getcwd()
 SCORESHEET_FILE = os.path.join(_SCRIPT_DIR, "GLIM_Viva_Scores.xlsx")
+
+# Component directory for the dynamic timer and cheat monitor
+COMPONENT_DIR = os.path.join(_SCRIPT_DIR, "viva_controller_component")
+if not os.path.exists(COMPONENT_DIR):
+    os.makedirs(COMPONENT_DIR)
+
+# --- Dynamic HTML/JS Controller Component ---
+def render_viva_controller(remaining_seconds):
+    html_code = f"""<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .timer-box {{
+            font-family: 'Arial', sans-serif;
+            background: #ffebee;
+            color: #c62828;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #ffcdd2;
+            text-align: center;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }}
+        .timer-label {{
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #b71c1c;
+            margin-bottom: 4px;
+        }}
+        .timer-value {{
+            font-size: 22px;
+        }}
+        .fs-box {{
+            font-family: 'Arial', sans-serif;
+            background: #fff8e1;
+            border: 1px solid #ffe082;
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+            margin-bottom: 15px;
+        }}
+        .fs-warn {{
+            font-size: 11px;
+            color: #e65100;
+            margin-bottom: 6px;
+        }}
+        .fs-btn {{
+            background: #e65100;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-weight: bold;
+            font-size: 13px;
+            cursor: pointer;
+            width: 100%;
+        }}
+    </style>
+    <script>
+    function sendValue(value) {{
+        window.parent.postMessage({{
+            type: "streamlit:setComponentValue",
+            value: value
+        }}, "*");
+    }}
+    
+    // Set frame height to show timer in sidebar
+    window.parent.postMessage({{
+        type: "streamlit:setFrameHeight",
+        height: 150
+    }}, "*");
+    
+    let timeLeft = {remaining_seconds};
+    
+    function updateTimerDisplay() {{
+        let minutes = Math.floor(timeLeft / 60);
+        let seconds = timeLeft % 60;
+        if (seconds < 10) seconds = "0" + seconds;
+        document.getElementById("timer").innerText = minutes + ":" + seconds;
+        
+        if (timeLeft < 60) {{
+            document.getElementById("timer-container").style.background = "#ffcdd2";
+        }}
+    }}
+    
+    let timerInterval = setInterval(function() {{
+        timeLeft--;
+        if (timeLeft <= 0) {{
+            clearInterval(timerInterval);
+            sendValue("timeout");
+        }} else {{
+            updateTimerDisplay();
+        }}
+    }}, 1000);
+
+    // ------------------------------------------------------------------
+    // ANTI-CHEAT / EXAM LOCK-DOWN
+    // The timer component lives inside a Streamlit iframe. To reliably
+    // detect the student leaving the exam (switching tabs, opening another
+    // browser window, opening another app, opening dev-tools, etc.) we must
+    // attach our listeners to the TOP-LEVEL page, not to this iframe -
+    // otherwise simply clicking the chat box would (wrongly) look like
+    // cheating. Streamlit runs same-origin so window.top is reachable.
+    // ------------------------------------------------------------------
+    let cheatReported = false;
+    function reportCheat(reason) {{
+        if (cheatReported) return;
+        cheatReported = true;
+        try {{ console.warn("VIVA cheat trigger: " + reason); }} catch (e) {{}}
+        sendValue("cheated");
+    }}
+
+    let guardWin, guardDoc;
+    try {{
+        guardWin = window.top;
+        guardDoc = window.top.document;
+        void guardDoc.visibilityState;
+    }} catch (e) {{
+        guardWin = window;
+        guardDoc = document;
+    }}
+
+    // 1) Tab switch / minimize / window hidden
+    guardDoc.addEventListener('visibilitychange', function() {{
+        if (guardDoc.visibilityState === 'hidden') {{
+            reportCheat("tab hidden / minimized");
+        }}
+    }});
+
+    // 2) Window lost focus -> another window or app opened on top.
+    guardWin.addEventListener('blur', function() {{
+        reportCheat("window lost focus / another window opened");
+    }});
+
+    // 3) Block right-click context menu (prevents 'Open in new window/tab')
+    guardDoc.addEventListener('contextmenu', function(e) {{ e.preventDefault(); }});
+
+    // 4) Block copy / cut / paste
+    ['copy', 'cut', 'paste'].forEach(function(evt) {{
+        guardDoc.addEventListener(evt, function(e) {{ e.preventDefault(); }});
+    }});
+
+    // 5) Block shortcuts that open new windows/tabs or dev-tools.
+    guardWin.addEventListener('keydown', function(e) {{
+        let k = (e.key || "").toLowerCase();
+        let ctrlOrCmd = e.ctrlKey || e.metaKey;
+        if (ctrlOrCmd && ['t', 'n', 'w', 'tab'].indexOf(k) !== -1) {{
+            e.preventDefault();
+            reportCheat("blocked new-window/tab shortcut: " + k);
+        }}
+        if (k === 'f12' ||
+            (ctrlOrCmd && e.shiftKey && ['i', 'j', 'c'].indexOf(k) !== -1) ||
+            (ctrlOrCmd && k === 'u')) {{
+            e.preventDefault();
+            reportCheat("blocked dev-tools / view-source shortcut");
+        }}
+    }}, true);
+
+    // 6) Warn before closing / reloading the exam window.
+    guardWin.addEventListener('beforeunload', function(e) {{
+        e.preventDefault();
+        e.returnValue = "";
+    }});
+
+    // 7) FULLSCREEN REQUIREMENT
+    //    The exam must run in fullscreen. The student clicks the button to
+    //    enter fullscreen (browsers only allow it from a user gesture). Once
+    //    entered, leaving fullscreen during the viva counts as a violation
+    //    and submits the exam. A flag on window.top persists across the
+    //    component reloads that Streamlit triggers on every answer.
+    function isFullscreen() {{
+        try {{
+            return !!(guardDoc.fullscreenElement || guardDoc.webkitFullscreenElement);
+        }} catch (e) {{ return false; }}
+    }}
+
+    function syncFullscreenUI() {{
+        let box = document.getElementById("fs-box");
+        if (!box) return;
+        box.style.display = isFullscreen() ? "none" : "block";
+    }}
+
+    function enterFullscreen() {{
+        try {{
+            let el = guardDoc.documentElement;
+            let req = el.requestFullscreen || el.webkitRequestFullscreen;
+            if (req) {{
+                req.call(el);
+                try {{ guardWin.__vivaFS = true; }} catch (e) {{}}
+            }}
+        }} catch (e) {{}}
+    }}
+
+    guardDoc.addEventListener('fullscreenchange', function() {{
+        let entered = false;
+        try {{ entered = !!guardWin.__vivaFS; }} catch (e) {{}}
+        if (!isFullscreen() && entered) {{
+            reportCheat("exited fullscreen during exam");
+        }}
+        syncFullscreenUI();
+    }});
+
+    window.addEventListener("load", function() {{
+        updateTimerDisplay();
+        let btn = document.getElementById("fs-btn");
+        if (btn) btn.addEventListener("click", enterFullscreen);
+        // If a previous render already put us in fullscreen, keep the prompt hidden.
+        syncFullscreenUI();
+    }});
+    </script>
+</head>
+<body style="margin:0; padding:0; background:transparent;">
+    <div id="fs-box" class="fs-box" style="display:none;">
+        <div class="fs-warn">⚠️ This viva must run in fullscreen.<br>Exiting fullscreen will submit your exam.</div>
+        <button id="fs-btn" class="fs-btn">🔳 Enter Fullscreen to continue</button>
+    </div>
+    <div id="timer-container" class="timer-box">
+        <div class="timer-label">⏱️ Time Remaining</div>
+        <div id="timer" class="timer-value">--:--</div>
+    </div>
+</body>
+</html>
+"""
+    with open(os.path.join(COMPONENT_DIR, "index.html"), "w", encoding="utf-8") as f:
+        f.write(html_code)
+        
+    focus_monitor = components.declare_component("viva_controller", path=COMPONENT_DIR)
+    return focus_monitor(key="viva_control_instance")
 
 # --- Groq client ---
 client = Groq(api_key=st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY"))
@@ -257,15 +496,26 @@ def get_grade(score):
 # --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Viva Settings")
-    subject = st.selectbox("Subject", [
-        "Marketing Management",
-        "Financial Management",
-        "Human Resource Management",
-        "Organizational Behaviour",
-        "Organizational Behaviour 2",
-        "Business Strategy"
-    ])
-    difficulty = st.selectbox("Difficulty", ["Easy", "Standard", "Rigorous"])
+    
+    # Subject selection or lock
+    if VIVA_SUBJECT:
+        subject = st.text_input("Subject (Locked)", value=VIVA_SUBJECT, disabled=True)
+    else:
+        subject = st.selectbox("Subject", [
+            "Marketing Management",
+            "Financial Management",
+            "Human Resource Management",
+            "Organizational Behaviour",
+            "Organizational Behaviour 2",
+            "Business Strategy"
+        ])
+        
+    # Difficulty selection or lock
+    if VIVA_DIFFICULTY:
+        difficulty = st.text_input("Difficulty (Locked)", value=VIVA_DIFFICULTY, disabled=True)
+    else:
+        difficulty = st.selectbox("Difficulty", ["Easy", "Standard", "Rigorous"])
+        
     student_name = st.text_input("Student Name", placeholder="Enter full name...")
     student_roll = st.text_input("Student Roll", placeholder="Enter roll number...")
 
@@ -311,9 +561,32 @@ for key, default in [
     ("saved_path", ""),
     ("processed_audio_ids", set()),
     ("last_spoken_index", -1),
+    ("cheated_detected", False),
+    ("timeout_triggered", False),
+    ("viva_start_time", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+# --- Active Focus & Timer Monitor (Sidebar Injection) ---
+if st.session_state.viva_started and not st.session_state.viva_ended and VIVA_TIME_LIMIT_MINUTES > 0:
+    elapsed = int(time.time() - st.session_state.viva_start_time)
+    remaining_seconds = max(0, VIVA_TIME_LIMIT_MINUTES * 60 - elapsed)
+    
+    with st.sidebar:
+        st.divider()
+        # Render the controller iframe
+        viva_signal = render_viva_controller(remaining_seconds)
+        
+        # Monitor signals returned from client-side JS
+        if viva_signal == "cheated":
+            st.session_state.cheated_detected = True
+            st.session_state.viva_ended = True
+            st.rerun()
+        elif viva_signal == "timeout" or remaining_seconds <= 0:
+            st.session_state.timeout_triggered = True
+            st.session_state.viva_ended = True
+            st.rerun()
 
 # --- Start viva ---
 if start_btn and not st.session_state.viva_started and uploaded_file and student_name:
@@ -321,6 +594,8 @@ if start_btn and not st.session_state.viva_started and uploaded_file and student
     with st.spinner("📖 Reading your project..."):
         project_text = extract_text(uploaded_file)
         st.session_state.project_text = project_text
+
+    st.session_state.viva_start_time = time.time()
 
     SYSTEM_PROMPT = f"""You are a strict but fair oral viva examiner for a PGDM {subject} course at Great Lakes Institute of Management.
 
@@ -336,12 +611,30 @@ The student has submitted the following project. Base ALL your questions ONLY on
 
 Your rules:
 - Ask ONE question at a time.
-- Start with the project objective, then probe methodology, data, findings, and recommendations.
-- Challenge weak justifications or inconsistencies in the project.
-- If the student cannot explain their own work, note it clearly.
 - Keep responses concise — this is a spoken oral viva.
+- Focus on the following two-phase examination flow:
+  
+  PHASE 1: CONCEPT AUTHENTICATION (First 2-3 questions)
+  Your FIRST job is to authenticate the student: confirm they genuinely know the
+  concepts, theories, models, frameworks and terminology that appear in THEIR OWN
+  report. Identify the key concepts actually named in the project text above and
+  test the student on them.
+  - Pick specific terms/models/frameworks that appear in the report and ask the
+    student to DEFINE them in their own words.
+  - Ask how that specific concept was applied in their project and why they chose it.
+  - Require the student to correctly explain at least TWO key concepts from their
+    report before you move on to Phase 2.
+  - If the student cannot define or explain the core concepts written in their own
+    report, treat this as a red flag for authenticity, note it explicitly, weight
+    the final score down accordingly, and continue with stricter questioning.
+
+  PHASE 2: PROJECT DEEP DIVE (Remaining questions)
+  Once the concept authentication is done, probe their specific methodology, findings, data collection, and recommendations. 
+  - Challenge weak arguments, assumptions, or inconsistencies in their data.
+  - Check their knowledge of their own analysis.
+
 - After every 5 exchanges give a brief mid-viva remark.
-- After 10 exchanges, end the viva with EXACTLY this format:
+- After {VIVA_TOTAL_QUESTIONS} exchanges, end the viva with EXACTLY this format:
 
 VIVA COMPLETE
 Score: X/10
@@ -349,7 +642,7 @@ Strengths: [2-3 specific points]
 Areas for Improvement: [2-3 specific points]
 Recommended Topics: [list]
 
-Begin now by greeting {student_name} warmly and asking your first question about their project."""
+Begin now by greeting {student_name} warmly and starting Phase 1 (Concept Authentication) by asking your first question about a key concept in their project report."""
 
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -408,7 +701,7 @@ def handle_response(user_text, via_voice=False):
 
     st.sidebar.metric("Exchanges", st.session_state.exchange_count)
 
-    should_end = ("VIVA COMPLETE" in reply) or (st.session_state.exchange_count >= 10)
+    should_end = ("VIVA COMPLETE" in reply) or (st.session_state.exchange_count >= VIVA_TOTAL_QUESTIONS)
     if should_end:
         final_text = reply
         if "VIVA COMPLETE" not in reply:
@@ -459,10 +752,29 @@ if st.session_state.viva_started and not st.session_state.viva_ended:
     if typed:
         handle_response(typed, via_voice=False)
 
-# --- Viva ended ---
+# --- Handle termination cases ---
+if st.session_state.viva_ended:
+    if st.session_state.get("cheated_detected", False) and not st.session_state.score_saved:
+        st.session_state.final_score = 0.0
+        st.session_state.final_grade = "F (Academic Dishonesty)"
+        st.session_state.closing_message = "VIVA TERMINATED: Student switched tabs or minimized the exam window."
+        
+    elif st.session_state.get("timeout_triggered", False) and not st.session_state.score_saved:
+        with st.spinner("⏳ Time's up! Generating final assessment..."):
+            final_text = request_final_summary()
+        st.session_state.final_score = parse_score(final_text)
+        st.session_state.final_grade = get_grade(st.session_state.final_score)
+        st.session_state.closing_message = final_text
+
+# --- Viva ended screen and saving ---
 if st.session_state.viva_ended:
     st.divider()
-    st.subheader("🏁 Viva Complete")
+    if st.session_state.get("cheated_detected", False):
+        st.error("🚨 VIVA TERMINATED: Tab switching or window minimization detected. This incident has been logged.")
+    elif st.session_state.get("timeout_triggered", False):
+        st.warning("⏱️ Time limit reached! The viva has been automatically submitted.")
+    else:
+        st.subheader("🏁 Viva Complete")
 
     # ---- AUTO-SAVE the scoresheet immediately ----
     if not st.session_state.score_saved:
@@ -470,6 +782,12 @@ if st.session_state.viva_ended:
             st.session_state.messages[-1]["content"] if st.session_state.messages else ""
         )
         strengths, improvements = parse_feedback(closing)
+        
+        # Override values if cheated
+        if st.session_state.get("cheated_detected", False):
+            strengths = "N/A - Terminated for cheating"
+            improvements = "Switched tabs or minimized browser tab during active exam"
+            
         try:
             filepath = save_to_excel(
                 student_name=student_name,
@@ -484,9 +802,9 @@ if st.session_state.viva_ended:
             )
             st.session_state.score_saved = True
             st.session_state.saved_path = filepath
-            st.success(f"✅ Scoresheet auto-saved to:\n`{filepath}`")
+            st.success(f"✅ Scoresheet auto-saved locally to:\n`{filepath}`")
         except Exception as e:
-            st.error(f"⚠️ Auto-save failed: {e}")
+            st.error(f"⚠️ Local auto-save failed: {e}")
 
         # Post to Google Sheets if webhook is configured
         gs_saved = save_to_google_sheets(
@@ -526,6 +844,11 @@ if st.session_state.viva_ended:
             st.session_state.final_grade = get_grade(st.session_state.final_score)
             closing = st.session_state.closing_message or ""
             strengths, improvements = parse_feedback(closing)
+            
+            if st.session_state.get("cheated_detected", False):
+                strengths = "N/A - Terminated for cheating"
+                improvements = "Switched tabs or minimized browser tab during active exam"
+                
             filepath = save_to_excel(
                 student_name=student_name, subject=subject, difficulty=difficulty,
                 score=st.session_state.final_score, grade=st.session_state.final_grade,
