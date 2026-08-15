@@ -34,7 +34,7 @@ import json
 
 st.set_page_config(page_title="GLIM Project Viva Examiner", page_icon="🎓")
 st.title("🎓 GLIM Project Viva Examiner")
-st.caption("Powered by Groq + Llama 3.1 — 🎙️ Web-Enabled Oral Viva Mode")
+st.caption("Powered by Groq +openai/gpt-oss-20b — 🎙️ Web-Enabled Oral Viva Mode")
 
 # Save the scoresheet in the SAME folder as this script, regardless of where
 # Streamlit is launched from. This makes it easy to find on disk.
@@ -279,7 +279,7 @@ client = Groq(api_key=st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API
 
 def chat_with_llm(messages):
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-20b",
         messages=messages,
         max_tokens=1024
     )
