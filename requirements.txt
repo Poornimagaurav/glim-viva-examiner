@@ -1,6 +1,7 @@
-streamlit>=1.41.0
-groq
+streamlit>=1.39
+google-genai
 pymupdf
 python-docx
 openpyxl
 requests
+filelock
