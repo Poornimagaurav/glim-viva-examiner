@@ -1,4 +1,5 @@
 streamlit>=1.39
+groq
 google-genai
 pymupdf
 python-docx
